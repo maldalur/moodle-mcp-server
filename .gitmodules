@@ -1,0 +1,3 @@
+[submodule "moodle-mcp-server"]
+	path = moodle-mcp-server
+	url = https://github.com/peancor/moodle-mcp-server
