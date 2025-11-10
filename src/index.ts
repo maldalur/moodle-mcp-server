@@ -126,6 +126,20 @@ class MoodleMcpServer {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         {
+          name: 'search_courses',
+          description: 'Busca cursos por nombre. Permite al LLM encontrar el ID del curso que necesita buscar',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              courseName: {
+                type: 'string',
+                description: 'Nombre o parte del nombre del curso a buscar',
+              },
+            },
+            required: ['courseName'],
+          },
+        },
+        {
           name: 'get_students',
           description: 'Obtiene la lista de estudiantes inscritos en el curso configurado',
           inputSchema: {
@@ -271,6 +285,8 @@ class MoodleMcpServer {
       
       try {
         switch (request.params.name) {
+          case 'search_courses':
+            return await this.searchCourses(request.params.arguments);
           case 'get_students':
             return await this.getStudents();
           case 'get_assignments':
@@ -313,6 +329,63 @@ class MoodleMcpServer {
         throw error;
       }
     });
+  }
+
+  private async searchCourses(args: any) {
+    const courseName = args?.courseName;
+    
+    if (!courseName) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'courseName is required'
+      );
+    }
+    
+    console.error(`[API] Searching courses with name: ${courseName}`);
+    
+    try {
+      // Primero obtenemos todos los cursos del usuario
+      const response = await this.axiosInstance.get('', {
+        params: {
+          wsfunction: 'core_course_get_courses',
+        },
+      });
+
+      const courses = response.data;
+      
+      // Filtramos los cursos por nombre (búsqueda case-insensitive)
+      const searchTerm = courseName.toLowerCase();
+      const matchingCourses = courses
+        .filter((course: any) => 
+          course.fullname?.toLowerCase().includes(searchTerm) || 
+          course.shortname?.toLowerCase().includes(searchTerm)
+        )
+        .map((course: any) => ({
+          id: course.id,
+          fullname: course.fullname,
+          shortname: course.shortname,
+          categoryid: course.categoryid,
+          visible: course.visible,
+          startdate: course.startdate,
+          enddate: course.enddate,
+        }));
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              searchTerm: courseName,
+              totalFound: matchingCourses.length,
+              courses: matchingCourses,
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      console.error('[Error] Failed to search courses:', error);
+      throw error;
+    }
   }
 
   private async getStudents() {

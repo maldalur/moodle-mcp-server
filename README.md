@@ -4,6 +4,14 @@ An MCP (Model Context Protocol) server that enables LLMs to interact with the Mo
 
 ## Features
 
+### Course Management
+- **`search_courses`** - Search for courses by name
+  - Parameters:
+    - `courseName` (required): Name or part of the name of the course to search
+  - Returns: list of matching courses with ID, full name, short name, category ID, visibility status, and start/end dates
+  - Performs case-insensitive search on both full name and short name
+  - Useful for finding the course ID needed for other operations
+
 ### Student Management
 - **`get_students`** - Retrieves the list of students enrolled in the course
   - Returns: student ID, full name, email, and last access timestamp
@@ -90,6 +98,30 @@ npm run build
 ```
 
 ## Usage Examples
+
+### Searching for Courses
+```typescript
+// Search for courses by name
+const courses = await search_courses({ courseName: "Programming" });
+// Returns all courses that contain "Programming" in their full name or short name
+
+// Example response:
+{
+  "searchTerm": "Programming",
+  "totalFound": 2,
+  "courses": [
+    {
+      "id": 130,
+      "fullname": "Programming 1 - Java",
+      "shortname": "PROG1",
+      "categoryid": 5,
+      "visible": 1,
+      "startdate": 1693526400,
+      "enddate": 1704067200
+    }
+  ]
+}
+```
 
 ### Getting Student Information
 ```typescript
