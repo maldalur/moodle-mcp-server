@@ -4,25 +4,59 @@ An MCP (Model Context Protocol) server that enables LLMs to interact with the Mo
 
 ## Features
 
-### Student Management Tools
-- `list_students` - Retrieves the list of students enrolled in the course
-  - Displays ID, name, email, and last access time for each student
+### Student Management
+- **`get_students`** - Retrieves the list of students enrolled in the course
+  - Returns: student ID, full name, email, and last access timestamp
+  - No parameters required (uses configured MOODLE_COURSE_ID)
 
-### Assignment Management Tools
-- `get_assignments` - Retrieves all available assignments in the course
-  - Includes information such as ID, name, description, due date, and maximum grade
-- `get_student_submissions` - Examines a student's submissions for a specific assignment
-  - Requires the assignment ID and optionally the student ID
-- `provide_assignment_feedback` - Provides grades and comments for a student's submission
-  - Requires student ID, assignment ID, grade, and feedback comment
+### Assignment Management
+- **`get_assignments`** - Retrieves all available assignments in the course
+  - Returns: assignment ID, name, description, due date, cutoff date, and maximum grade
+  - No parameters required (uses configured MOODLE_COURSE_ID)
 
-### Quiz Management Tools
-- `get_quizzes` - Retrieves all available quizzes in the course
-  - Includes information such as ID, name, description, opening/closing dates, and maximum grade
-- `get_quiz_attempts` - Examines a student's attempts on a specific quiz
-  - Requires the quiz ID and optionally the student ID
-- `provide_quiz_feedback` - Provides comments for a quiz attempt
-  - Requires the attempt ID and feedback comment
+- **`get_submissions`** - Retrieves submissions for assignments
+  - Parameters: 
+    - `assignmentId` (optional): Specific assignment ID to filter by
+    - `studentId` (optional): Specific student ID to filter by
+  - Returns: submission status, time submitted, and grading information
+  - If no parameters provided, returns all submissions for the course
+
+- **`get_submission_content`** - Retrieves detailed content of a specific submission
+  - Parameters:
+    - `studentId` (required): Student ID
+    - `assignmentId` (required): Assignment ID
+  - Returns: submission text, file attachments, and metadata
+
+- **`provide_feedback`** - Provides grades and feedback for a submission
+  - Parameters:
+    - `studentId` (required): Student ID
+    - `assignmentId` (required): Assignment ID
+    - `feedback` (required): Feedback text
+    - `grade` (optional): Numerical grade to assign
+  - Stores the feedback and grade in Moodle
+
+### VPL (Virtual Programming Lab) Support
+- **`get_vpl_assignments`** - Retrieves all VPL assignments in the course
+  - Returns: VPL ID, name, description, due date, and configuration
+  - Specifically targets VPL activities (module name: "vpl")
+
+- **`get_vpl_submission`** - Retrieves a student's VPL submission with code files
+  - Parameters:
+    - `studentId` (required): Student ID
+    - `vplId` (required): VPL assignment ID
+  - Returns: submission details, submitted files with content, and grading information
+  - Useful for code review and automated analysis
+
+### Quiz Management
+- **`get_quizzes`** - Retrieves all available quizzes in the course
+  - Returns: quiz ID, name, description, time open/close, time limit, and maximum grade
+  - No parameters required (uses configured MOODLE_COURSE_ID)
+
+- **`get_quiz_grade`** - Retrieves a student's grade for a specific quiz
+  - Parameters:
+    - `studentId` (required): Student ID
+    - `quizId` (required): Quiz ID
+  - Returns: numerical grade, maximum grade, percentage, and grading status
 
 ## Requirements
 
@@ -53,6 +87,62 @@ MOODLE_COURSE_ID=1  # Replace with your course ID
 4. Build the server:
 ```bash
 npm run build
+```
+
+## Usage Examples
+
+### Getting Student Information
+```typescript
+// Get all students in the course
+const students = await get_students();
+```
+
+### Working with Assignments
+```typescript
+// Get all assignments
+const assignments = await get_assignments();
+
+// Get all submissions for a specific assignment
+const submissions = await get_submissions({ assignmentId: 123 });
+
+// Get detailed content of a specific submission
+const content = await get_submission_content({ 
+  studentId: 456, 
+  assignmentId: 123 
+});
+
+// Provide feedback and grade
+await provide_feedback({
+  studentId: 456,
+  assignmentId: 123,
+  feedback: "Great work! Well structured code.",
+  grade: 8.5
+});
+```
+
+### Working with VPL Assignments
+```typescript
+// Get all VPL assignments
+const vplAssignments = await get_vpl_assignments();
+
+// Get a student's VPL submission with code files
+const vplSubmission = await get_vpl_submission({
+  studentId: 456,
+  vplId: 789
+});
+// Returns: submission details, array of files with names and content
+```
+
+### Working with Quizzes
+```typescript
+// Get all quizzes
+const quizzes = await get_quizzes();
+
+// Get a student's grade for a specific quiz
+const grade = await get_quiz_grade({
+  studentId: 456,
+  quizId: 321
+});
 ```
 
 ## Usage with Claude
@@ -105,9 +195,35 @@ For Windows users, the paths would use backslashes:
 ```
 
 Once configured, Claude will be able to interact with your Moodle course to:
-- View the list of students and their submissions
-- Provide comments and grades for assignments
-- Examine quiz attempts and offer feedback
+- View enrolled students and their information
+- Manage assignments and retrieve submissions
+- Access VPL (Virtual Programming Lab) assignments and submitted code
+- Provide grades and feedback for student work
+- Retrieve quiz information and student grades
+- Download and analyze submission content including files
+
+## Integration with AI Analysis System
+
+This MCP server is designed to work alongside a Python-based AI analysis system located in the parent directory. The Python system provides:
+
+- **AI-powered submission analysis** using Ollama/LLMs
+- **Automated feedback generation** based on submission content
+- **Risk assessment** for students (high/medium/low risk levels)
+- **URL extraction and verification** from submissions
+- **Progress tracking** and trend analysis
+- **Markdown report generation** for students and courses
+
+### Workflow
+
+1. **MCP Server**: Provides API access to Moodle data (students, assignments, VPL, quizzes)
+2. **Python System** (`src/main.py`): 
+   - Retrieves data using Moodle Web Services directly
+   - Downloads submission files
+   - Performs AI analysis using Ollama
+   - Generates comprehensive reports
+3. **Integration**: Both systems can work independently or in tandem for complete course management
+
+For AI analysis features, refer to `AI_ANALYSIS_README.md` in the parent directory.
 
 ## Development
 
