@@ -23,9 +23,10 @@ if (!MOODLE_API_TOKEN) {
   throw new Error('MOODLE_API_TOKEN environment variable is required');
 }
 
-if (!MOODLE_COURSE_ID) {
-  throw new Error('MOODLE_COURSE_ID environment variable is required');
-}
+// MOODLE_COURSE_ID es opcional ahora - algunas herramientas lo requieren como parámetro
+// if (!MOODLE_COURSE_ID) {
+//   throw new Error('MOODLE_COURSE_ID environment variable is required');
+// }
 
 // Interfaces para los tipos de datos
 interface Student {
@@ -141,37 +142,73 @@ class MoodleMcpServer {
         },
         {
           name: 'get_students',
-          description: 'Obtiene la lista de estudiantes inscritos en el curso configurado',
+          description: 'Obtiene la lista de estudiantes inscritos en un curso. Puedes proporcionar el nombre del curso o su ID',
           inputSchema: {
             type: 'object',
-            properties: {},
+            properties: {
+              courseId: {
+                type: 'number',
+                description: 'ID del curso. Si no se proporciona, se usa MOODLE_COURSE_ID del entorno',
+              },
+              courseName: {
+                type: 'string',
+                description: 'Nombre del curso. Si se proporciona, se buscará automáticamente el ID del curso',
+              },
+            },
             required: [],
           },
         },
         {
           name: 'get_assignments',
-          description: 'Obtiene la lista de tareas asignadas en el curso configurado',
+          description: 'Obtiene la lista de tareas asignadas en un curso. Puedes proporcionar el nombre del curso o su ID',
           inputSchema: {
             type: 'object',
-            properties: {},
+            properties: {
+              courseId: {
+                type: 'number',
+                description: 'ID del curso. Si no se proporciona, se usa MOODLE_COURSE_ID del entorno',
+              },
+              courseName: {
+                type: 'string',
+                description: 'Nombre del curso. Si se proporciona, se buscará automáticamente el ID del curso',
+              },
+            },
             required: [],
           },
         },
         {
           name: 'get_quizzes',
-          description: 'Obtiene la lista de quizzes en el curso configurado',
+          description: 'Obtiene la lista de quizzes en un curso. Puedes proporcionar el nombre del curso o su ID',
           inputSchema: {
             type: 'object',
-            properties: {},
+            properties: {
+              courseId: {
+                type: 'number',
+                description: 'ID del curso. Si no se proporciona, se usa MOODLE_COURSE_ID del entorno',
+              },
+              courseName: {
+                type: 'string',
+                description: 'Nombre del curso. Si se proporciona, se buscará automáticamente el ID del curso',
+              },
+            },
             required: [],
           },
         },
         {
           name: 'get_vpl_assignments',
-          description: 'Obtiene la lista de tareas VPL (Virtual Programming Lab) en el curso configurado',
+          description: 'Obtiene la lista de tareas VPL (Virtual Programming Lab) en un curso. Puedes proporcionar el nombre del curso o su ID',
           inputSchema: {
             type: 'object',
-            properties: {},
+            properties: {
+              courseId: {
+                type: 'number',
+                description: 'ID del curso. Si no se proporciona, se usa MOODLE_COURSE_ID del entorno',
+              },
+              courseName: {
+                type: 'string',
+                description: 'Nombre del curso. Si se proporciona, se buscará automáticamente el ID del curso',
+              },
+            },
             required: [],
           },
         },
@@ -288,13 +325,13 @@ class MoodleMcpServer {
           case 'search_courses':
             return await this.searchCourses(request.params.arguments);
           case 'get_students':
-            return await this.getStudents();
+            return await this.getStudents(request.params.arguments);
           case 'get_assignments':
-            return await this.getAssignments();
+            return await this.getAssignments(request.params.arguments);
           case 'get_quizzes':
-            return await this.getQuizzes();
+            return await this.getQuizzes(request.params.arguments);
           case 'get_vpl_assignments':
-            return await this.getVplAssignments();
+            return await this.getVplAssignments(request.params.arguments);
           case 'get_submissions':
             return await this.getSubmissions(request.params.arguments);
           case 'get_vpl_submission':
@@ -331,6 +368,88 @@ class MoodleMcpServer {
     });
   }
 
+  // Función auxiliar para normalizar texto (quitar acentos)
+  private normalizeText(text: string): string {
+    return text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+  }
+
+  // Función auxiliar para resolver el courseId a partir del nombre o ID
+  private async resolveCourseId(args: any): Promise<number> {
+    // Si ya tenemos courseId, lo retornamos
+    if (args?.courseId) {
+      return args.courseId;
+    }
+
+    // Si tenemos courseName, buscamos el curso
+    if (args?.courseName) {
+      console.error(`[Helper] Resolving courseId from courseName: ${args.courseName}`);
+      
+      try {
+        // Reutilizamos la lógica de searchCourses
+        const response = await this.axiosInstance.get('', {
+          params: {
+            wsfunction: 'core_course_search_courses',
+            criterianame: 'search',
+            criteriavalue: args.courseName,
+          },
+        });
+
+        let courses = response.data.courses || [];
+        
+        // Si no hay resultados, intentar búsqueda flexible
+        if (courses.length === 0) {
+          console.error(`[Helper] No exact match, trying flexible search...`);
+          const allCoursesResponse = await this.axiosInstance.get('', {
+            params: {
+              wsfunction: 'core_course_get_courses',
+            },
+          });
+          
+          const allCourses = allCoursesResponse.data;
+          const normalizedSearchTerm = this.normalizeText(args.courseName);
+          
+          courses = allCourses.filter((course: any) => {
+            const normalizedFullname = this.normalizeText(course.fullname || '');
+            const normalizedShortname = this.normalizeText(course.shortname || '');
+            return normalizedFullname.includes(normalizedSearchTerm) ||
+                   normalizedShortname.includes(normalizedSearchTerm);
+          });
+        }
+        
+        if (courses.length === 0) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `No se encontró ningún curso con el nombre: ${args.courseName}`
+          );
+        }
+        
+        if (courses.length > 1) {
+          console.error(`[Helper] Multiple courses found (${courses.length}), using first one: ${courses[0].fullname}`);
+        }
+        
+        const resolvedId = courses[0].id;
+        console.error(`[Helper] Resolved courseId: ${resolvedId} (${courses[0].fullname})`);
+        return resolvedId;
+      } catch (error) {
+        console.error('[Helper] Error resolving courseId:', error);
+        throw error;
+      }
+    }
+
+    // Si no tenemos ni courseId ni courseName, usamos el de entorno
+    if (MOODLE_COURSE_ID) {
+      return parseInt(MOODLE_COURSE_ID);
+    }
+
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      'Se requiere courseId, courseName, o MOODLE_COURSE_ID en el entorno'
+    );
+  }
+
   private async searchCourses(args: any) {
     const courseName = args?.courseName;
     
@@ -344,31 +463,53 @@ class MoodleMcpServer {
     console.error(`[API] Searching courses with name: ${courseName}`);
     
     try {
-      // Primero obtenemos todos los cursos del usuario
+      // Primero intentar búsqueda exacta con la API de Moodle
       const response = await this.axiosInstance.get('', {
         params: {
-          wsfunction: 'core_course_get_courses',
+          wsfunction: 'core_course_search_courses',
+          criterianame: 'search',
+          criteriavalue: courseName,
         },
       });
 
-      const courses = response.data;
+      const searchResults = response.data;
+      let courses = searchResults.courses || [];
       
-      // Filtramos los cursos por nombre (búsqueda case-insensitive)
-      const searchTerm = courseName.toLowerCase();
-      const matchingCourses = courses
-        .filter((course: any) => 
-          course.fullname?.toLowerCase().includes(searchTerm) || 
-          course.shortname?.toLowerCase().includes(searchTerm)
-        )
-        .map((course: any) => ({
-          id: course.id,
-          fullname: course.fullname,
-          shortname: course.shortname,
-          categoryid: course.categoryid,
-          visible: course.visible,
-          startdate: course.startdate,
-          enddate: course.enddate,
-        }));
+      // Si no hay resultados y el nombre tiene caracteres especiales,
+      // intentar búsqueda flexible obteniendo todos los cursos y filtrando
+      if (courses.length === 0) {
+        console.error(`[API] No results found, trying flexible search...`);
+        const allCoursesResponse = await this.axiosInstance.get('', {
+          params: {
+            wsfunction: 'core_course_get_courses',
+          },
+        });
+        
+        const allCourses = allCoursesResponse.data;
+        const normalizedSearchTerm = this.normalizeText(courseName);
+        
+        // Filtrar cursos por similitud (sin acentos)
+        courses = allCourses.filter((course: any) => {
+          const normalizedFullname = this.normalizeText(course.fullname || '');
+          const normalizedShortname = this.normalizeText(course.shortname || '');
+          return normalizedFullname.includes(normalizedSearchTerm) ||
+                 normalizedShortname.includes(normalizedSearchTerm);
+        });
+        
+        console.error(`[API] Flexible search found ${courses.length} courses`);
+      }
+      
+      // Mapear a formato simplificado con ID y nombre
+      const matchingCourses = courses.map((course: any) => ({
+        id: course.id,
+        fullname: course.fullname,
+        shortname: course.shortname,
+        categoryid: course.categoryid,
+        categoryname: course.categoryname,
+        visible: course.visible,
+        startdate: course.startdate,
+        enddate: course.enddate,
+      }));
 
       return {
         content: [
@@ -388,13 +529,16 @@ class MoodleMcpServer {
     }
   }
 
-  private async getStudents() {
-    console.error('[API] Requesting enrolled users');
+  private async getStudents(args?: any) {
+    // Resolver courseId automáticamente desde courseName si es necesario
+    const courseId = await this.resolveCourseId(args);
+    
+    console.error(`[API] Requesting enrolled users for course: ${courseId}`);
     
     const response = await this.axiosInstance.get('', {
       params: {
         wsfunction: 'core_enrol_get_enrolled_users',
-        courseid: MOODLE_COURSE_ID,
+        courseid: courseId,
       },
     });
 
@@ -418,13 +562,16 @@ class MoodleMcpServer {
     };
   }
 
-  private async getAssignments() {
-    console.error('[API] Requesting assignments');
+  private async getAssignments(args?: any) {
+    // Resolver courseId automáticamente desde courseName si es necesario
+    const courseId = await this.resolveCourseId(args);
+    
+    console.error(`[API] Requesting assignments for course: ${courseId}`);
     
     const response = await this.axiosInstance.get('', {
       params: {
         wsfunction: 'mod_assign_get_assignments',
-        courseids: [MOODLE_COURSE_ID],
+        courseids: [courseId],
       },
     });
 
@@ -440,13 +587,16 @@ class MoodleMcpServer {
     };
   }
 
-  private async getQuizzes() {
-    console.error('[API] Requesting quizzes');
+  private async getQuizzes(args?: any) {
+    // Resolver courseId automáticamente desde courseName si es necesario
+    const courseId = await this.resolveCourseId(args);
+    
+    console.error(`[API] Requesting quizzes for course: ${courseId}`);
     
     const response = await this.axiosInstance.get('', {
       params: {
         wsfunction: 'mod_quiz_get_quizzes_by_courses',
-        courseids: [MOODLE_COURSE_ID],
+        courseids: [courseId],
       },
     });
 
@@ -785,14 +935,17 @@ class MoodleMcpServer {
     }
   }
 
-  private async getVplAssignments() {
-    console.error('[API] Requesting VPL assignments');
+  private async getVplAssignments(args?: any) {
+    // Resolver courseId automáticamente desde courseName si es necesario
+    const courseId = await this.resolveCourseId(args);
+    
+    console.error(`[API] Requesting VPL assignments for course: ${courseId}`);
     
     try {
       const response = await this.axiosInstance.get('', {
         params: {
           wsfunction: 'core_course_get_contents',
-          courseid: MOODLE_COURSE_ID,
+          courseid: courseId,
         },
       });
 
