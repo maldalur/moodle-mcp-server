@@ -7,6 +7,7 @@ COPY moodle-mcp-server/package.json moodle-mcp-server/package-lock.json ./
 RUN npm install --omit=dev
 
 COPY moodle-mcp-server ./
+RUN npm run build
 
 EXPOSE 3000
 
