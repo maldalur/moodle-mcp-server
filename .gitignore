@@ -5,3 +5,9 @@ __pycache__/
 /.vscode
 logs/
 submission_cache.json
+
+# Node.js (moodle-mcp-server)
+node_modules/
+build/
+*.log
+.env*
