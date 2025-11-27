@@ -314,12 +314,44 @@ class MoodleMcpServer {
             required: ['studentId', 'quizId'],
           },
         },
+        {
+          name: 'get_forums',
+          description: 'Obtiene la lista de foros en un curso. Puedes proporcionar el nombre del curso o su ID',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              courseId: {
+                type: 'number',
+                description: 'ID del curso. Si no se proporciona, se usa MOODLE_COURSE_ID del entorno',
+              },
+              courseName: {
+                type: 'string',
+                description: 'Nombre del curso. Si se proporciona, se buscará automáticamente el ID del curso',
+              },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'get_forum_discussions',
+          description: 'Obtiene las discusiones de un foro específico',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              forumId: {
+                type: 'number',
+                description: 'ID del foro',
+              },
+            },
+            required: ['forumId'],
+          },
+        },
       ],
     }));
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       console.error(`[Tool] Executing tool: ${request.params.name}`);
-      
+
       try {
         switch (request.params.name) {
           case 'search_courses':
@@ -342,6 +374,10 @@ class MoodleMcpServer {
             return await this.getSubmissionContent(request.params.arguments);
           case 'get_quiz_grade':
             return await this.getQuizGrade(request.params.arguments);
+          case 'get_forums':
+            return await this.getForums(request.params.arguments);
+          case 'get_forum_discussions':
+            return await this.getForumDiscussions(request.params.arguments);
           default:
             throw new McpError(
               ErrorCode.MethodNotFound,
@@ -1047,6 +1083,99 @@ class MoodleMcpServer {
     }
   }
 
+  public async getForums(args?: any) {
+    // Resolver courseId automáticamente desde courseName si es necesario
+    const courseId = await this.resolveCourseId(args);
+
+    console.error(`[API] Requesting forums for course: ${courseId}`);
+
+    try {
+      const response = await this.axiosInstance.get('', {
+        params: {
+          wsfunction: 'mod_forum_get_forums_by_courses',
+          courseids: [courseId],
+        },
+      });
+
+      console.error('[API Response] Forums response:', response.data);
+
+      const forums = response.data.forums || [];
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(forums, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      console.error('[Error] Failed to get forums:', error);
+      if (axios.isAxiosError(error)) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Error al obtener foros: ${
+                error.response?.data?.message || error.message
+              }`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      throw error;
+    }
+  }
+
+  public async getForumDiscussions(args: any) {
+    const { forumId } = args;
+
+    if (!forumId) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'Forum ID is required'
+      );
+    }
+
+    console.error(`[API] Requesting discussions for forum ${forumId}`);
+
+    try {
+      const response = await this.axiosInstance.get('', {
+        params: {
+          wsfunction: 'mod_forum_get_forum_discussions',
+          forumid: forumId,
+        },
+      });
+
+      const discussions = response.data.discussions || [];
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(discussions, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      console.error('[Error] Failed to get forum discussions:', error);
+      if (axios.isAxiosError(error)) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Error al obtener discusiones del foro: ${
+                error.response?.data?.message || error.message
+              }`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      throw error;
+    }
+  }
 
   async run() {
     const transport = new StdioServerTransport();
