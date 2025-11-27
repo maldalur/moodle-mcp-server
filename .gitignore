@@ -3,5 +3,5 @@
 __pycache__/
 /downloads/*
 /.vscode
-/logs
+logs/
 submission_cache.json

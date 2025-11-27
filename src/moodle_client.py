@@ -83,9 +83,53 @@ class MoodleClient:
                         "name": module.get("name"),
                         "vplid": module.get("instance"),  # ID de la instancia VPL
                         "cmid": module.get("id"),  # ID del módulo de curso (necesario para mod_vpl_open)
-                        "section": section.get("name")
+                        "section": section.get("name"),
+                        "description": module.get("description", ""),  # Deskribapena
+                        "description_clean": self._clean_html(module.get("description", ""))  # HTML gabe
                     })
         return vpl_activities
+    
+    def get_vpl_info(self, cmid: int) -> dict:
+        """
+        Lortu VPL zeregin baten informazio osoa mod_vpl_open erabiliz
+        
+        Args:
+            cmid: Course Module ID
+        
+        Returns:
+            Dict VPL informazioarekin (deskribapena, etab.)
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/webservice/rest/server.php",
+                params={
+                    "wstoken": self.token,
+                    "wsfunction": "mod_vpl_open",
+                    "moodlewsrestformat": "json",
+                    "id": cmid
+                }
+            )
+            
+            data = response.json()
+            
+            if isinstance(data, dict) and "exception" not in data:
+                return {
+                    "name": data.get("name", ""),
+                    "intro": self._clean_html(data.get("intro", "")),
+                    "intro_html": data.get("intro", ""),
+                    "shortdescription": data.get("shortdescription", ""),
+                    "example": data.get("example", ""),
+                    "grade": data.get("grade", 0),
+                    "duedate": data.get("duedate", 0),
+                    "requirednet": data.get("requirednet", ""),
+                    "restrictededitor": data.get("restrictededitor", 0)
+                }
+            
+            return {"intro": "", "error": data.get("message", "No info")}
+            
+        except Exception as e:
+            logger.error(f"Error lortu VPL info cmid={cmid}: {e}")
+            return {"intro": "", "error": str(e)}
 
 
 
@@ -550,4 +594,686 @@ class MoodleClient:
         
         return results
 
+    def get_assignment_details(self, course_id: int, assignment_id: int) -> dict:
+        """
+        Lortu zeregin baten informazio osoa: deskribapena, rubrika, epeak, etab.
+        
+        Args:
+            course_id: Kurtsoko IDa
+            assignment_id: Zereginaren IDa
+        
+        Returns:
+            Dict zehaztasun guztiekin
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/webservice/rest/server.php",
+                params={
+                    "wstoken": self.token,
+                    "wsfunction": "mod_assign_get_assignments",
+                    "moodlewsrestformat": "json",
+                    "courseids[0]": course_id,
+                    "includenotenrolledcourses": 1
+                }
+            )
+            
+            data = response.json()
+            
+            if "courses" in data and data["courses"]:
+                for course in data["courses"]:
+                    for assignment in course.get("assignments", []):
+                        if assignment.get("id") == assignment_id:
+                            return {
+                                "id": assignment.get("id"),
+                                "name": assignment.get("name", ""),
+                                "intro": self._clean_html(assignment.get("intro", "")),
+                                "intro_html": assignment.get("intro", ""),
+                                "introformat": assignment.get("introformat", 0),
+                                "duedate": assignment.get("duedate", 0),
+                                "cutoffdate": assignment.get("cutoffdate", 0),
+                                "grade": assignment.get("grade", 0),
+                                "maxattempts": assignment.get("maxattempts", -1),
+                                "configs": self._parse_assignment_configs(assignment.get("configs", [])),
+                                "introattachments": assignment.get("introattachments", [])
+                            }
+            
+            return {"error": "Zeregina ez da aurkitu"}
+            
+        except Exception as e:
+            logger.error(f"Error lortu zeregina {assignment_id}: {e}")
+            return {"error": str(e)}
     
+    def get_grading_definition(self, cmid: int) -> dict:
+        """
+        Lortu zeregin baten kalifikazio-definizioa (rubrika, guía, etab.)
+        
+        Args:
+            cmid: Course Module ID (ez assignment ID!)
+        
+        Returns:
+            Dict rubrika/guia informazioarekin
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/webservice/rest/server.php",
+                params={
+                    "wstoken": self.token,
+                    "wsfunction": "core_grading_get_definitions",
+                    "moodlewsrestformat": "json",
+                    "cmids[0]": cmid,
+                    "activeonly": 0
+                }
+            )
+            
+            data = response.json()
+            
+            if "exception" in data:
+                logger.warning(f"Ez dago rubrikarik cmid={cmid}: {data.get('message', '')}")
+                return {"has_rubric": False, "message": data.get("message", "Sin rubrica")}
+            
+            if "areas" in data and data["areas"]:
+                area = data["areas"][0]
+                definitions = area.get("definitions", [])
+                
+                if definitions:
+                    definition = definitions[0]
+                    method = definition.get("method", "")
+                    
+                    result = {
+                        "has_rubric": True,
+                        "method": method,
+                        "name": definition.get("name", ""),
+                        "description": definition.get("description", "")
+                    }
+                    
+                    # Rubrika-ren kasuan
+                    if method == "rubric" and "rubric" in definition:
+                        rubric = definition["rubric"]
+                        criteria = []
+                        
+                        for criterion in rubric.get("rubric_criteria", []):
+                            levels = []
+                            for level in criterion.get("levels", []):
+                                levels.append({
+                                    "score": level.get("score", 0),
+                                    "definition": self._clean_html(level.get("definition", ""))
+                                })
+                            
+                            criteria.append({
+                                "id": criterion.get("id"),
+                                "description": self._clean_html(criterion.get("description", "")),
+                                "sortorder": criterion.get("sortorder", 0),
+                                "levels": sorted(levels, key=lambda x: x["score"])
+                            })
+                        
+                        result["criteria"] = sorted(criteria, key=lambda x: x["sortorder"])
+                        result["rubric_text"] = self._format_rubric_as_text(result["criteria"])
+                    
+                    # Guía de calificación
+                    elif method == "guide" and "guide" in definition:
+                        guide = definition["guide"]
+                        criteria = []
+                        
+                        for criterion in guide.get("guide_criteria", []):
+                            criteria.append({
+                                "id": criterion.get("id"),
+                                "shortname": criterion.get("shortname", ""),
+                                "description": self._clean_html(criterion.get("description", "")),
+                                "maxscore": criterion.get("maxscore", 0),
+                                "sortorder": criterion.get("sortorder", 0)
+                            })
+                        
+                        result["criteria"] = sorted(criteria, key=lambda x: x["sortorder"])
+                        result["guide_text"] = self._format_guide_as_text(result["criteria"])
+                    
+                    return result
+            
+            return {"has_rubric": False, "message": "No se encontró definición de calificación"}
+            
+        except Exception as e:
+            logger.error(f"Error lortu rubrika cmid={cmid}: {e}")
+            return {"has_rubric": False, "error": str(e)}
+    
+    def get_assignment_cmid(self, course_id: int, assignment_id: int) -> int:
+        """
+        Lortu assignment baten Course Module ID (cmid)
+        
+        Args:
+            course_id: Kurtsoko IDa
+            assignment_id: Zereginaren instance IDa
+        
+        Returns:
+            cmid edo None
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/webservice/rest/server.php",
+                params={
+                    "wstoken": self.token,
+                    "wsfunction": "core_course_get_contents",
+                    "moodlewsrestformat": "json",
+                    "courseid": course_id
+                }
+            )
+            
+            data = response.json()
+            
+            for section in data:
+                for module in section.get("modules", []):
+                    if module.get("modname") == "assign" and module.get("instance") == assignment_id:
+                        return module.get("id")
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error lortu cmid assignment_id={assignment_id}: {e}")
+            return None
+    
+    def get_full_assignment_info(self, course_id: int, assignment_id: int) -> dict:
+        """
+        Lortu zeregin baten informazio OSOA: deskribapena + rubrika
+        
+        Args:
+            course_id: Kurtsoko IDa
+            assignment_id: Zereginaren IDa
+        
+        Returns:
+            Dict informazio guztiekin
+        """
+        # Lortu oinarrizko informazioa
+        details = self.get_assignment_details(course_id, assignment_id)
+        
+        if "error" in details:
+            return details
+        
+        # Lortu cmid rubrikarako
+        cmid = self.get_assignment_cmid(course_id, assignment_id)
+        
+        if cmid:
+            details["cmid"] = cmid
+            grading = self.get_grading_definition(cmid)
+            details["grading"] = grading
+            
+            # Sortu testu osoa AI-rako
+            details["full_criteria_text"] = self._build_full_criteria_text(details, grading)
+        else:
+            details["grading"] = {"has_rubric": False, "message": "CMID ez da aurkitu"}
+            details["full_criteria_text"] = details.get("intro", "")
+        
+        return details
+    
+    def _clean_html(self, html_text: str) -> str:
+        """HTML etiketak kendu eta testu garbia itzuli"""
+        import re
+        if not html_text:
+            return ""
+        
+        # HTML etiketak kendu
+        text = re.sub(r'<[^>]+>', ' ', html_text)
+        # Entitate bereziak ordezkatu
+        text = text.replace('&nbsp;', ' ')
+        text = text.replace('&amp;', '&')
+        text = text.replace('&lt;', '<')
+        text = text.replace('&gt;', '>')
+        text = text.replace('&quot;', '"')
+        # Zuriune anitzak kendu
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+    
+    def _parse_assignment_configs(self, configs: list) -> dict:
+        """Assignment konfigurazioak parseatu"""
+        result = {}
+        for config in configs:
+            plugin = config.get("plugin", "")
+            subtype = config.get("subtype", "")
+            name = config.get("name", "")
+            value = config.get("value", "")
+            
+            key = f"{plugin}_{name}" if plugin else name
+            result[key] = value
+        
+        return result
+    
+    def _format_rubric_as_text(self, criteria: list) -> str:
+        """Rubrika testu formatuan"""
+        lines = ["RÚBRICA DE EVALUACIÓN:", "=" * 40]
+        
+        for i, criterion in enumerate(criteria, 1):
+            lines.append(f"\n{i}. {criterion['description']}")
+            lines.append("-" * 30)
+            
+            for level in criterion.get("levels", []):
+                lines.append(f"   • {level['score']} puntu: {level['definition']}")
+        
+        return "\n".join(lines)
+    
+    def _format_guide_as_text(self, criteria: list) -> str:
+        """Guía de calificación testu formatuan"""
+        lines = ["GUÍA DE CALIFICACIÓN:", "=" * 40]
+        
+        for i, criterion in enumerate(criteria, 1):
+            lines.append(f"\n{i}. {criterion.get('shortname', 'Criterio')} (máx. {criterion.get('maxscore', 0)} puntos)")
+            lines.append(f"   {criterion['description']}")
+        
+        return "\n".join(lines)
+    
+    def _build_full_criteria_text(self, details: dict, grading: dict) -> str:
+        """Sortu testu osoa AI analisirako"""
+        parts = []
+        
+        # Deskribapena
+        if details.get("intro"):
+            parts.append("DESCRIPCIÓN DE LA TAREA:")
+            parts.append("=" * 40)
+            parts.append(details["intro"])
+            parts.append("")
+        
+        # Epea
+        if details.get("duedate"):
+            from datetime import datetime
+            due = datetime.fromtimestamp(details["duedate"])
+            parts.append(f"FECHA LÍMITE: {due.strftime('%Y-%m-%d %H:%M')}")
+            parts.append("")
+        
+        # Nota máxima
+        if details.get("grade"):
+            parts.append(f"PUNTUACIÓN MÁXIMA: {details['grade']}")
+            parts.append("")
+        
+        # Rubrika edo guía
+        if grading.get("has_rubric"):
+            if grading.get("rubric_text"):
+                parts.append(grading["rubric_text"])
+            elif grading.get("guide_text"):
+                parts.append(grading["guide_text"])
+        
+        return "\n".join(parts)
+
+    # =========================================================================
+    # FOROAK - Forums
+    # =========================================================================
+    
+    def get_forums(self, course_id: int) -> list:
+        """
+        Lortu kurtso bateko foro guztiak
+        
+        Args:
+            course_id: Kurtsoko IDa
+        
+        Returns:
+            Foroen zerrenda: [{"id": 1, "name": "Foro 1", "type": "general", ...}, ...]
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/webservice/rest/server.php",
+                params={
+                    "wstoken": self.token,
+                    "wsfunction": "mod_forum_get_forums_by_courses",
+                    "moodlewsrestformat": "json",
+                    "courseids[0]": course_id
+                }
+            )
+            
+            if response.status_code != 200:
+                raise ConnectionError(f"Error al conectar con Moodle API (status {response.status_code})")
+            
+            data = response.json()
+            
+            if isinstance(data, dict) and "exception" in data:
+                logger.error(f"Error obteniendo foros: {data.get('message', '')}")
+                return []
+            
+            forums = []
+            for forum in data:
+                forums.append({
+                    "id": forum.get("id"),
+                    "course": forum.get("course"),
+                    "name": forum.get("name"),
+                    "intro": self._clean_html(forum.get("intro", "")),
+                    "intro_html": forum.get("intro", ""),
+                    "type": forum.get("type"),  # general, news, qanda, social, etc.
+                    "cmid": forum.get("cmid"),
+                    "numdiscussions": forum.get("numdiscussions", 0),
+                    "timemodified": forum.get("timemodified", 0),
+                    "is_task": self._is_forum_task(forum)  # Foro-tarea den ala ez
+                })
+            
+            return forums
+            
+        except Exception as e:
+            logger.error(f"Error lortu foroak course_id={course_id}: {e}")
+            return []
+    
+    def _is_forum_task(self, forum: dict) -> bool:
+        """
+        Foroa tarea modukoa den egiaztatu hainbat irizpideren arabera
+        
+        Args:
+            forum: Foroaren datuak
+        
+        Returns:
+            True foroa tarea bada, False bestela
+        """
+        # Hitz gakoak tarea identifikatzeko
+        task_keywords = [
+            'tarea', 'práctica', 'entrega', 'ejercicio', 'actividad',
+            'trabajo', 'evaluable', 'obligatorio', 'calificable',
+            'task', 'assignment', 'exercise', 'submission',
+            'lana', 'ariketa', 'zeregina', 'entrega'  # Euskaraz ere
+        ]
+        
+        # Izenean edo deskribapeanean bilatu
+        name = forum.get("name", "").lower()
+        intro = forum.get("intro", "").lower()
+        
+        for keyword in task_keywords:
+            if keyword in name or keyword in intro:
+                return True
+        
+        # Q&A motako foroak sarritan tarearentzako dira
+        if forum.get("type") == "qanda":
+            return True
+        
+        return False
+    
+    def get_task_forums(self, course_id: int) -> list:
+        """
+        Lortu kurtso bateko TAREA moduko foroak bakarrik
+        
+        Args:
+            course_id: Kurtsoko IDa
+        
+        Returns:
+            Foro-tareen zerrenda
+        """
+        all_forums = self.get_forums(course_id)
+        return [f for f in all_forums if f.get('is_task', False)]
+    
+    def get_forum_with_student_posts(self, forum_id: int) -> dict:
+        """
+        Lortu foroaren eduki osoa ikasleen mezuekin bilduta
+        
+        Args:
+            forum_id: Foroaren IDa
+        
+        Returns:
+            Dict foroaren informazio osoarekin eta ikasle bakoitzaren mezuekin
+        """
+        result = {
+            'forum_id': forum_id,
+            'discussions': [],
+            'students': {},  # {user_id: {'info': {...}, 'posts': [...]}}
+            'total_posts': 0
+        }
+        
+        discussions_data = self.get_forum_discussions(forum_id)
+        
+        for disc in discussions_data.get('discussions', []):
+            posts_data = self.get_discussion_posts(disc['id'])
+            
+            disc_info = {
+                'id': disc['id'],
+                'name': disc['name'],
+                'posts': posts_data.get('posts', [])
+            }
+            result['discussions'].append(disc_info)
+            
+            # Bildu ikasle bakoitzaren mezuak
+            for post in posts_data.get('posts', []):
+                author = post.get('author', {})
+                user_id = author.get('id')
+                
+                if user_id:
+                    if user_id not in result['students']:
+                        result['students'][user_id] = {
+                            'info': {
+                                'id': user_id,
+                                'fullname': author.get('fullname', 'Desconocido')
+                            },
+                            'posts': []
+                        }
+                    result['students'][user_id]['posts'].append(post)
+                    result['total_posts'] += 1
+        
+        return result
+
+    def get_forum_discussions(self, forum_id: int, sort_by: str = "timemodified", sort_direction: str = "DESC", page: int = 0, per_page: int = 50) -> dict:
+        """
+        Lortu foro bateko eztabaida guztiak
+        
+        Args:
+            forum_id: Foroaren IDa
+            sort_by: Ordenatzeko eremua (timemodified, created, replies, etc.)
+            sort_direction: Ordena norabidea (ASC, DESC)
+            page: Orria (0-tik hasita)
+            per_page: Eztabaida kopurua orriko
+        
+        Returns:
+            Dict eztabaidekin eta metadatuekin
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/webservice/rest/server.php",
+                params={
+                    "wstoken": self.token,
+                    "wsfunction": "mod_forum_get_forum_discussions",
+                    "moodlewsrestformat": "json",
+                    "forumid": forum_id,
+                    "sortby": sort_by,
+                    "sortdirection": sort_direction,
+                    "page": page,
+                    "perpage": per_page
+                }
+            )
+            
+            if response.status_code != 200:
+                raise ConnectionError(f"Error al conectar con Moodle API (status {response.status_code})")
+            
+            data = response.json()
+            
+            if isinstance(data, dict) and "exception" in data:
+                logger.error(f"Error obteniendo discusiones: {data.get('message', '')}")
+                return {"discussions": [], "error": data.get("message", "")}
+            
+            discussions = []
+            for disc in data.get("discussions", []):
+                discussions.append({
+                    "id": disc.get("id"),
+                    "discussion": disc.get("discussion"),
+                    "name": disc.get("name"),  # Título
+                    "subject": disc.get("subject"),
+                    "message": self._clean_html(disc.get("message", "")),
+                    "message_html": disc.get("message", ""),
+                    "userid": disc.get("userid"),
+                    "userfullname": disc.get("userfullname"),
+                    "usermodified": disc.get("usermodified"),
+                    "usermodifiedfullname": disc.get("usermodifiedfullname"),
+                    "created": disc.get("created", 0),
+                    "modified": disc.get("modified", 0),
+                    "timemodified": disc.get("timemodified", 0),
+                    "numreplies": disc.get("numreplies", 0),
+                    "pinned": disc.get("pinned", False),
+                    "locked": disc.get("locked", False),
+                    "starred": disc.get("starred", False),
+                    "attachment": disc.get("attachment", False),
+                    "attachments": disc.get("attachments", [])
+                })
+            
+            return {
+                "forum_id": forum_id,
+                "total_discussions": len(discussions),
+                "discussions": discussions
+            }
+            
+        except Exception as e:
+            logger.error(f"Error lortu eztabaidak forum_id={forum_id}: {e}")
+            return {"discussions": [], "error": str(e)}
+    
+    def get_discussion_posts(self, discussion_id: int) -> dict:
+        """
+        Lortu eztabaida bateko mezu guztiak (erantzunak barne)
+        
+        Args:
+            discussion_id: Eztabaidaren IDa
+        
+        Returns:
+            Dict mezuekin hierarkian
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/webservice/rest/server.php",
+                params={
+                    "wstoken": self.token,
+                    "wsfunction": "mod_forum_get_discussion_posts",
+                    "moodlewsrestformat": "json",
+                    "discussionid": discussion_id,
+                    "sortby": "created",
+                    "sortdirection": "ASC"
+                }
+            )
+            
+            if response.status_code != 200:
+                raise ConnectionError(f"Error al conectar con Moodle API (status {response.status_code})")
+            
+            data = response.json()
+            
+            if isinstance(data, dict) and "exception" in data:
+                logger.error(f"Error obteniendo posts: {data.get('message', '')}")
+                return {"posts": [], "error": data.get("message", "")}
+            
+            posts = []
+            for post in data.get("posts", []):
+                posts.append({
+                    "id": post.get("id"),
+                    "discussionid": post.get("discussionid"),
+                    "parentid": post.get("parentid"),  # 0 = post originala
+                    "subject": post.get("subject"),
+                    "message": self._clean_html(post.get("message", "")),
+                    "message_html": post.get("message", ""),
+                    "author": {
+                        "id": post.get("author", {}).get("id"),
+                        "fullname": post.get("author", {}).get("fullname"),
+                        "profileimageurl": post.get("author", {}).get("profileimageurl")
+                    },
+                    "timecreated": post.get("timecreated", 0),
+                    "timemodified": post.get("timemodified", 0),
+                    "hasparent": post.get("hasparent", False),
+                    "haschildren": len(post.get("children", [])) > 0,
+                    "attachments": post.get("attachments", [])
+                })
+            
+            return {
+                "discussion_id": discussion_id,
+                "total_posts": len(posts),
+                "posts": posts
+            }
+            
+        except Exception as e:
+            logger.error(f"Error lortu mezuak discussion_id={discussion_id}: {e}")
+            return {"posts": [], "error": str(e)}
+    
+    def get_unanswered_discussions(self, course_id: int) -> list:
+        """
+        Lortu irakaslearen erantzunik gabeko eztabaidak
+        (Ikasleen galdera edo mezuak)
+        
+        Args:
+            course_id: Kurtsoko IDa
+        
+        Returns:
+            Erantzun gabe dauden eztabaiden zerrenda
+        """
+        unanswered = []
+        
+        # Lortu kurtso honetako foro guztiak
+        forums = self.get_forums(course_id)
+        
+        for forum in forums:
+            # Lortu eztabaidak
+            result = self.get_forum_discussions(forum["id"])
+            
+            for disc in result.get("discussions", []):
+                # Eztabaida ireki eta erantzunik ez badu...
+                # edo azken mezua ikasle batena bada
+                if disc.get("numreplies", 0) == 0:
+                    disc["forum_name"] = forum["name"]
+                    disc["forum_id"] = forum["id"]
+                    disc["needs_response"] = True
+                    unanswered.append(disc)
+                else:
+                    # Egiaztatu azken mezua nork idatzi duen
+                    posts_result = self.get_discussion_posts(disc["id"])
+                    posts = posts_result.get("posts", [])
+                    
+                    if posts:
+                        # Azken mezua lortu
+                        last_post = max(posts, key=lambda p: p.get("timecreated", 0))
+                        
+                        # Hemen irakaslea den egiaztatu beharko litzateke
+                        # Oraingoz, parentid > 0 badu eta erantzunik ez badu markatu
+                        if last_post.get("parentid", 0) == 0:
+                            # Post originala da, ez erantzuna
+                            pass
+                        else:
+                            # Erantzun bat da
+                            disc["forum_name"] = forum["name"]
+                            disc["forum_id"] = forum["id"]
+                            disc["last_post"] = last_post
+                            disc["needs_response"] = False
+        
+        return unanswered
+    
+    def get_all_forum_content(self, course_id: int) -> dict:
+        """
+        Lortu kurtso bateko foro eduki osoa (foroak, eztabaidak, mezuak)
+        
+        Args:
+            course_id: Kurtsoko IDa
+        
+        Returns:
+            Dict foro informazio guztiekin
+        """
+        result = {
+            "course_id": course_id,
+            "forums": [],
+            "total_discussions": 0,
+            "total_posts": 0,
+            "unanswered_count": 0
+        }
+        
+        forums = self.get_forums(course_id)
+        
+        for forum in forums:
+            forum_data = {
+                "id": forum["id"],
+                "name": forum["name"],
+                "type": forum["type"],
+                "intro": forum["intro"],
+                "discussions": []
+            }
+            
+            discussions_result = self.get_forum_discussions(forum["id"])
+            
+            for disc in discussions_result.get("discussions", []):
+                # Lortu eztabaidako mezu guztiak
+                posts_result = self.get_discussion_posts(disc["id"])
+                
+                disc_data = {
+                    "id": disc["id"],
+                    "name": disc["name"],
+                    "author": disc["userfullname"],
+                    "created": disc["created"],
+                    "numreplies": disc["numreplies"],
+                    "posts": posts_result.get("posts", [])
+                }
+                
+                forum_data["discussions"].append(disc_data)
+                result["total_discussions"] += 1
+                result["total_posts"] += len(disc_data["posts"])
+                
+                if disc["numreplies"] == 0:
+                    result["unanswered_count"] += 1
+            
+            result["forums"].append(forum_data)
+        
+        return result
